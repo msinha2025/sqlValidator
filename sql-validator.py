@@ -21,9 +21,18 @@ def get_sql_command(sql):
 
 def basic_syntax_check(sql, command):
     if command == "SELECT":
-        # SELECT ... FROM <table>
-        if not re.search(r"\bSELECT\b.+\bFROM\b\s+[a-zA-Z_][a-zA-Z0-9_]*", sql, re.IGNORECASE):
+        has_select = re.search(r"\bSELECT\b", sql, re.IGNORECASE)
+        has_from = re.search(r"\bFROM\b\s+[a-zA-Z_][a-zA-Z0-9_]*", sql, re.IGNORECASE)
+        if not has_select:
             return False
+        if has_from:
+            return True
+        # Accept SELECT statements without FROM if they only use functions/literals
+        select_expr = re.sub(r"^\s*SELECT\s*", "", sql, flags=re.IGNORECASE).strip().rstrip(";")
+        # Accept if select_expr is a function call or literal (no spaces, no commas, or only function calls)
+        if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*\s*\(.*\)$", select_expr) or select_expr.isdigit():
+            return True
+        return False
     elif command == "INSERT":
         # INSERT INTO <table> (...) VALUES (...)
         if not re.search(r"\bINSERT\b\s+INTO\s+[a-zA-Z_][a-zA-Z0-9_]*\s*\(.+\)\s*VALUES\s*\(.+\)", sql, re.IGNORECASE):
@@ -43,17 +52,27 @@ def validate_sql(sql, allowed_tables):
     if not command or command not in ALL_COMMANDS:
         return "INVALID SYNTAX", set()
     referenced_tables = extract_table_names(sql)
-    # For DML/DDL, must reference at least one table
+    # For DML/DDL, must reference at least one table unless SELECT is function/literal only
     if command in DML_COMMANDS | DDL_COMMANDS:
-        if not referenced_tables:
-            return "INVALID SYNTAX - No table referenced", set()
-        disallowed = referenced_tables - allowed_tables
-        if disallowed:
-            return f"INVALID - Disallowed table(s): {', '.join(disallowed)}", disallowed
-        # Additional syntax checks for specific commands
-        if command in {"SELECT", "INSERT", "UPDATE", "CREATE"}:
+        if command == "SELECT":
             if not basic_syntax_check(sql, command):
                 return f"INVALID SYNTAX for {command}", set()
+            # If SELECT has FROM, check table reference
+            if re.search(r"\bFROM\b", sql, re.IGNORECASE):
+                if not referenced_tables:
+                    return "INVALID SYNTAX - No table referenced", set()
+                disallowed = referenced_tables - allowed_tables
+                if disallowed:
+                    return f"INVALID - Disallowed table(s): {', '.join(disallowed)}", disallowed
+        else:
+            if not referenced_tables:
+                return "INVALID SYNTAX - No table referenced", set()
+            disallowed = referenced_tables - allowed_tables
+            if disallowed:
+                return f"INVALID - Disallowed table(s): {', '.join(disallowed)}", disallowed
+            if command in {"INSERT", "UPDATE", "CREATE"}:
+                if not basic_syntax_check(sql, command):
+                    return f"INVALID SYNTAX for {command}", set()
     # For DCL, check for ON <table>
     if command in DCL_COMMANDS:
         if not referenced_tables:
